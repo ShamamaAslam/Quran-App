@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
-import { View, Text, Image, TouchableOpacity, FlatList, ActivityIndicator, StyleSheet } from 'react-native';
+import { View, Text, Image, TouchableOpacity, FlatList, ActivityIndicator, StyleSheet, TextInput } from 'react-native';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 
 export default function HomeScreen() {
   const [screen, setScreen] = useState('home');
@@ -8,32 +9,78 @@ export default function HomeScreen() {
   const [selectedSurah, setSelectedSurah] = useState('');
   const [selectedAyah, setSelectedAyah] = useState(null);
   const [loading, setLoading] = useState(false);
+  const [searchQuery, setSearchQuery] = useState('');
+  const [filteredSurahs, setFilteredSurahs] = useState([]);
+  const [currentPage, setCurrentPage] = useState(1);
+  const [hasMore, setHasMore] = useState(true);
 
+  // Save data to AsyncStorage
+  const saveData = async (key, data) => {
+    try {
+      await AsyncStorage.setItem(key, JSON.stringify(data));
+      console.log(`Data saved for key: ${key}`);
+    } catch (error) {
+      console.error('Error saving data:', error);
+    }
+  };
+
+  // Load data from AsyncStorage
+  const loadData = async (key) => {
+    try {
+      const data = await AsyncStorage.getItem(key);
+      return data ? JSON.parse(data) : null;
+    } catch (error) {
+      console.error('Error loading data:', error);
+      return null;
+    }
+  };
+
+  // Fetch Surahs and cache them
   useEffect(() => {
     if (screen === 'surahs') {
       setLoading(true);
-      fetch('https://api.alquran.cloud/v1/surah')
-        .then(response => response.json())
-        .then(data => {
-          setSurahs(data.data);
+      loadData('surahs').then((cachedSurahs) => {
+        if (cachedSurahs) {
+          setSurahs(cachedSurahs);
+          setFilteredSurahs(cachedSurahs);
           setLoading(false);
-        })
-        .catch(error => console.error('Error fetching Surahs:', error));
+        } else {
+          fetch(`https://api.alquran.cloud/v1/surah?page=${currentPage}`)
+            .then(response => response.json())
+            .then(data => {
+              setSurahs(data.data);
+              setFilteredSurahs(data.data);
+              saveData('surahs', data.data); // Cache Surahs
+              setLoading(false);
+            })
+            .catch(error => console.error('Error fetching Surahs:', error));
+        }
+      });
     }
-  }, [screen]);
+  }, [screen, currentPage]);
 
+  // Fetch Ayahs and cache them
   useEffect(() => {
     if (screen.startsWith('surah-')) {
       setLoading(true);
       const surahId = screen.split('-')[1];
-      fetch(`https://api.alquran.cloud/v1/surah/${surahId}/ar.alafasy`)
-        .then(response => response.json())
-        .then(data => {
-          setAyahs(data.data.ayahs);
-          setSelectedSurah(data.data.englishName);
+      loadData(`surah-${surahId}`).then((cachedAyahs) => {
+        if (cachedAyahs) {
+          setAyahs(cachedAyahs);
+          setSelectedSurah(cachedAyahs[0]?.surah?.englishName || '');
           setLoading(false);
-        })
-        .catch(error => console.error('Error fetching Ayahs:', error));
+        } else {
+          fetch(`https://api.alquran.cloud/v1/surah/${surahId}/ar.alafasy`)
+            .then(response => response.json())
+            .then(data => {
+              setAyahs(data.data.ayahs);
+              setSelectedSurah(data.data.englishName);
+              saveData(`surah-${surahId}`, data.data.ayahs); // Cache Ayahs
+              setLoading(false);
+            })
+            .catch(error => console.error('Error fetching Ayahs:', error));
+        }
+      });
     }
   }, [screen]);
 
@@ -42,6 +89,14 @@ export default function HomeScreen() {
       setSelectedAyah(index);
       setTimeout(() => highlightNextAyah(index + 1), 1000);
     }
+  };
+
+  const handleSearch = (query) => {
+    setSearchQuery(query);
+    const filtered = surahs.filter(surah => 
+      surah.englishName.toLowerCase().startsWith(query.toLowerCase())
+    );
+    setFilteredSurahs(filtered);
   };
 
   return (
@@ -86,11 +141,17 @@ export default function HomeScreen() {
             <Text style={styles.backButtonText}>⬅ Back</Text>
           </TouchableOpacity>
           <Text style={styles.title}>Surahs</Text>
+          <TextInput
+            style={styles.searchInput}
+            placeholder="Search Surahs..."
+            value={searchQuery}
+            onChangeText={handleSearch}
+          />
           {loading ? (
             <ActivityIndicator size="large" color="#0000ff" />
           ) : (
             <FlatList
-              data={surahs}
+              data={filteredSurahs}
               keyExtractor={(item) => item.number.toString()}
               renderItem={({ item }) => (
                 <TouchableOpacity
@@ -99,6 +160,15 @@ export default function HomeScreen() {
                 >
                   <Text style={styles.surahText}>{item.englishName}</Text>
                 </TouchableOpacity>
+              )}
+              onEndReached={() => {
+                if (hasMore) {
+                  setCurrentPage(prevPage => prevPage + 1);
+                }
+              }}
+              onEndReachedThreshold={0.5}
+              ListFooterComponent={() => (
+                loading ? <ActivityIndicator size="large" color="#0000ff" /> : null
               )}
             />
           )}
@@ -146,5 +216,14 @@ const styles = StyleSheet.create({
   ayahText: { fontSize: 16, padding: 10, backgroundColor: '#eef', marginVertical: 5, borderRadius: 5 },
   highlightedAyah: { backgroundColor: 'lightblue' },
   backButton: { padding: 10, backgroundColor: '#ff6666', borderRadius: 10, alignSelf: 'flex-start', marginBottom: 10 },
-  backButtonText: { color: 'white', fontSize: 16, fontWeight: 'bold' }
+  backButtonText: { color: 'white', fontSize: 16, fontWeight: 'bold' },
+  searchInput: {
+    height: 40,
+    borderColor: 'gray',
+    borderWidth: 1,
+    borderRadius: 10,
+    paddingHorizontal: 10,
+    marginBottom: 10,
+    width: '100%',
+  },
 });
