@@ -1,6 +1,8 @@
 import React, { useState, useEffect, createContext, useContext, ReactNode } from 'react';
 import { View, Text, Image, TouchableOpacity, FlatList, ActivityIndicator, StyleSheet, TextInput, Alert } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { Audio } from 'expo-av';
+import { Ionicons } from '@expo/vector-icons';
 
 // Define types for our data structures
 type Surah = {
@@ -15,6 +17,7 @@ type Ayah = {
   number: number;
   numberInSurah: number;
   text: string;
+  audio?: string;
 };
 
 type Translation = {
@@ -45,6 +48,10 @@ type AppContextType = {
   fetchAyahs: (surahNumber: number) => Promise<void>;
   fetchTranslations: (surahNumber: number) => Promise<void>;
   changeTranslation: (newLanguage: string) => void;
+  isPlaying: boolean;
+  currentAyah: number | null;
+  playAyah: (ayahNumber: number, audioUrl: string) => Promise<void>;
+  pauseAudio: () => Promise<void>;
 };
 
 // Create Context with default values
@@ -70,7 +77,11 @@ export const AppContext = createContext<AppContextType>({
   fetchSurahs: async () => {},
   fetchAyahs: async () => {},
   fetchTranslations: async () => {},
-  changeTranslation: () => {}
+  changeTranslation: () => {},
+  isPlaying: false,
+  currentAyah: null,
+  playAyah: async () => {},
+  pauseAudio: async () => {}
 });
 
 // App Provider Component
@@ -86,6 +97,9 @@ const AppProvider = ({ children }: { children: ReactNode }) => {
   const [searchQuery, setSearchQuery] = useState('');
   const [filteredSurahs, setFilteredSurahs] = useState<Surah[]>([]);
   const [translationLanguage, setTranslationLanguage] = useState('en.sahih');
+  const [sound, setSound] = useState<Audio.Sound | null>(null);
+  const [isPlaying, setIsPlaying] = useState(false);
+  const [currentAyah, setCurrentAyah] = useState<number | null>(null);
 
   const showError = (message: string) => {
     Alert.alert('Error', message);
@@ -109,6 +123,59 @@ const AppProvider = ({ children }: { children: ReactNode }) => {
       return null;
     }
   };
+
+  const playAyah = async (ayahNumber: number, audioUrl: string) => {
+    try {
+      // Stop any currently playing audio
+      if (sound) {
+        await sound.unloadAsync();
+      }
+
+      // Play the new audio
+      const { sound: newSound } = await Audio.Sound.createAsync(
+        { uri: audioUrl },
+        { shouldPlay: true }
+      );
+      
+      setSound(newSound);
+      setIsPlaying(true);
+      setCurrentAyah(ayahNumber);
+
+      // When playback finishes
+      newSound.setOnPlaybackStatusUpdate((status) => {
+        if (status.didJustFinish) {
+          setIsPlaying(false);
+          setCurrentAyah(null);
+          
+          // Auto-play next ayah
+          const nextAyahIndex = ayahs.findIndex(a => a.numberInSurah === ayahNumber) + 1;
+          if (nextAyahIndex < ayahs.length) {
+            const nextAyah = ayahs[nextAyahIndex];
+            playAyah(nextAyah.numberInSurah, nextAyah.audio || '');
+          }
+        }
+      });
+    } catch (error) {
+      console.error('Error playing audio:', error);
+      showError('Failed to play audio');
+    }
+  };
+
+  const pauseAudio = async () => {
+    if (sound) {
+      await sound.pauseAsync();
+      setIsPlaying(false);
+    }
+  };
+
+  // Clean up audio when component unmounts
+  useEffect(() => {
+    return () => {
+      if (sound) {
+        sound.unloadAsync();
+      }
+    };
+  }, [sound]);
 
   const handleSearch = (query: string) => {
     setSearchQuery(query);
@@ -174,7 +241,10 @@ const AppProvider = ({ children }: { children: ReactNode }) => {
       const data = await response.json();
       if (!data.data || !data.data.ayahs) throw new Error('Invalid ayah data');
       
-      const ayahsData = data.data.ayahs;
+      const ayahsData = data.data.ayahs.map((ayah: any) => ({
+        ...ayah,
+        audio: `https://verses.quran.com/alawi_64k/${String(surahNumber).padStart(3, '0')}${String(ayah.numberInSurah).padStart(3, '0')}.mp3`
+      }));
       setAyahs(ayahsData);
       await saveData(cachedKey, ayahsData);
     } catch (error) {
@@ -247,7 +317,11 @@ const AppProvider = ({ children }: { children: ReactNode }) => {
     fetchSurahs,
     fetchAyahs,
     fetchTranslations,
-    changeTranslation
+    changeTranslation,
+    isPlaying,
+    currentAyah,
+    playAyah,
+    pauseAudio
   };
 
   return (
@@ -297,7 +371,7 @@ const HomeScreen = () => {
             <Text style={styles.buttonText}>🔖 Bookmark</Text>
           </TouchableOpacity>
           <TouchableOpacity style={styles.button} onPress={() => Alert.alert('Settings feature coming soon')}>
-            <Text style={styles.buttonText}>⚙️ Settings</Text>
+            <Text style={styles.buttonText}>⚙ Settings</Text>
           </TouchableOpacity>
         </View>
       </View>
@@ -390,7 +464,11 @@ const AyahScreen = () => {
     translationLanguage,
     fetchAyahs,
     fetchTranslations,
-    changeTranslation
+    changeTranslation,
+    isPlaying,
+    currentAyah,
+    playAyah,
+    pauseAudio
   } = useContext(AppContext);
 
   useEffect(() => {
@@ -401,10 +479,20 @@ const AyahScreen = () => {
   }, [selectedSurah?.number, translationLanguage]);
 
   const renderAyahItem = ({ item, index }: { item: Ayah, index: number }) => (
-    <TouchableOpacity onPress={() => setSelectedAyah(index)}>
+    <TouchableOpacity onPress={() => {
+      setSelectedAyah(index);
+      if (isPlaying && currentAyah === item.numberInSurah) {
+        pauseAudio();
+      } else {
+        if (item.audio) {
+          playAyah(item.numberInSurah, item.audio);
+        }
+      }
+    }}>
       <View style={[
         styles.ayahContainer,
-        selectedAyah === index && styles.highlightedAyah
+        selectedAyah === index && styles.highlightedAyah,
+        currentAyah === item.numberInSurah && styles.playingAyah
       ]}>
         <Text style={styles.ayahNumber}>{item.numberInSurah}.</Text>
         <View style={styles.ayahTextContainer}>
@@ -413,6 +501,13 @@ const AyahScreen = () => {
             <Text style={styles.ayahTranslation}>
               {translations[index].text}
             </Text>
+          )}
+        </View>
+        <View style={styles.audioControls}>
+          {currentAyah === item.numberInSurah && isPlaying ? (
+            <Ionicons name="pause-circle" size={24} color="#344D92" />
+          ) : (
+            <Ionicons name="play-circle" size={24} color="#344D92" />
           )}
         </View>
       </View>
@@ -683,18 +778,26 @@ const styles = StyleSheet.create({
     backgroundColor: 'white',
     marginBottom: 10,
     borderRadius: 10,
-    elevation: 2
+    elevation: 2,
+    flexDirection: 'row',
+    alignItems: 'center'
   },
   highlightedAyah: {
-    backgroundColor: '#e6f0ff'
+    backgroundColor: '#f0f0f0'
+  },
+  playingAyah: {
+    backgroundColor: '#e6f0ff',
+    borderLeftWidth: 3,
+    borderLeftColor: '#344D92'
   },
   ayahNumber: {
     fontSize: 14,
     fontWeight: 'bold',
     color: '#344D92',
-    marginBottom: 5
+    marginRight: 10
   },
   ayahTextContainer: {
+    flex: 1,
     flexDirection: 'column'
   },
   ayahArabic: {
@@ -710,6 +813,9 @@ const styles = StyleSheet.create({
     lineHeight: 22,
     color: '#555',
     textAlign: 'left'
+  },
+  audioControls: {
+    marginLeft: 10
   },
   loader: {
     marginTop: 50
