@@ -234,17 +234,21 @@ const AppProvider = ({ children }: { children: ReactNode }) => {
         setLoading(false);
         return;
       }
-
+  
       const response = await fetch(`https://api.alquran.cloud/v1/surah/${surahNumber}/ar.alafasy`);
       if (!response.ok) throw new Error('Failed to fetch ayahs');
       
       const data = await response.json();
       if (!data.data || !data.data.ayahs) throw new Error('Invalid ayah data');
       
+      // Use the audio URLs provided by the API instead of constructing them
       const ayahsData = data.data.ayahs.map((ayah: any) => ({
-        ...ayah,
-        audio: `https://verses.quran.com/alawi_64k/${String(surahNumber).padStart(3, '0')}${String(ayah.numberInSurah).padStart(3, '0')}.mp3`
+        number: ayah.number,
+        numberInSurah: ayah.numberInSurah,
+        text: ayah.text,
+        audio: ayah.audio // Use the audio URL from the API response
       }));
+      
       setAyahs(ayahsData);
       await saveData(cachedKey, ayahsData);
     } catch (error) {
@@ -253,6 +257,8 @@ const AppProvider = ({ children }: { children: ReactNode }) => {
       setLoading(false);
     }
   };
+
+
 
   const fetchTranslations = async (surahNumber: number) => {
     if (!surahNumber) return;
