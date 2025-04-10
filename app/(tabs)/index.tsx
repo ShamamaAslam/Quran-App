@@ -1013,8 +1013,6 @@ export default function App() {
     </AppProvider>
   );
 }
-
-// Styles
 const styles = StyleSheet.create({
   appContainer: {
     flex: 1,
