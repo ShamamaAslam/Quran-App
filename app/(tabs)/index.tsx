@@ -1,5 +1,6 @@
-import React, { useState, useEffect, createContext, useContext, ReactNode } from 'react';
-import { View, Text, Image, TouchableOpacity, FlatList, ActivityIndicator, StyleSheet, TextInput, Alert } from 'react-native';
+
+import React, { useState, useEffect, createContext, useContext, ReactNode, useRef } from 'react';
+import { View, Text, Image, TouchableOpacity, FlatList, ActivityIndicator, StyleSheet, TextInput, Alert, Switch, RefreshControl, NativeSyntheticEvent, NativeScrollEvent } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Audio } from 'expo-av';
 import { Ionicons } from '@expo/vector-icons';
@@ -25,12 +26,18 @@ type Translation = {
   text: string;
 };
 
+type Tafseer = {
+  number: number;
+  text: string;
+};
+
 type AppContextType = {
   screen: string;
   setScreen: (screen: string) => void;
   surahs: Surah[];
   ayahs: Ayah[];
   translations: Translation[];
+  tafseer: Tafseer[];
   selectedSurah: Surah | null;
   setSelectedSurah: (surah: Surah | null) => void;
   selectedAyah: number | null;
@@ -41,17 +48,31 @@ type AppContextType = {
   setSearchQuery: (query: string) => void;
   filteredSurahs: Surah[];
   translationLanguage: string;
+  displaySettings: {
+    showArabic: boolean;
+    showTranslation: boolean;
+    showTafseer: boolean;
+  };
+  updateDisplaySettings: (settings: Partial<{
+    showArabic: boolean;
+    showTranslation: boolean;
+    showTafseer: boolean;
+  }>) => void;
   saveData: (key: string, data: any) => Promise<void>;
   loadData: (key: string) => Promise<any>;
   handleSearch: (query: string) => void;
   fetchSurahs: () => Promise<void>;
   fetchAyahs: (surahNumber: number) => Promise<void>;
   fetchTranslations: (surahNumber: number) => Promise<void>;
+  fetchTafseer: (surahNumber: number) => Promise<void>;
   changeTranslation: (newLanguage: string) => void;
   isPlaying: boolean;
   currentAyah: number | null;
   playAyah: (ayahNumber: number, audioUrl: string) => Promise<void>;
   pauseAudio: () => Promise<void>;
+  loadNextSurah: () => void;
+  loadPreviousSurah: () => void;
+  currentSurahIndex: number;
 };
 
 // Create Context with default values
@@ -61,6 +82,7 @@ export const AppContext = createContext<AppContextType>({
   surahs: [],
   ayahs: [],
   translations: [],
+  tafseer: [],
   selectedSurah: null,
   setSelectedSurah: () => {},
   selectedAyah: null,
@@ -71,17 +93,27 @@ export const AppContext = createContext<AppContextType>({
   setSearchQuery: () => {},
   filteredSurahs: [],
   translationLanguage: 'en.sahih',
+  displaySettings: {
+    showArabic: true,
+    showTranslation: true,
+    showTafseer: false,
+  },
+  updateDisplaySettings: () => {},
   saveData: async () => {},
   loadData: async () => null,
   handleSearch: () => {},
   fetchSurahs: async () => {},
   fetchAyahs: async () => {},
   fetchTranslations: async () => {},
+  fetchTafseer: async () => {},
   changeTranslation: () => {},
   isPlaying: false,
   currentAyah: null,
   playAyah: async () => {},
-  pauseAudio: async () => {}
+  pauseAudio: async () => {},
+  loadNextSurah: () => {},
+  loadPreviousSurah: () => {},
+  currentSurahIndex: 0
 });
 
 // App Provider Component
@@ -90,6 +122,7 @@ const AppProvider = ({ children }: { children: ReactNode }) => {
   const [surahs, setSurahs] = useState<Surah[]>([]);
   const [ayahs, setAyahs] = useState<Ayah[]>([]);
   const [translations, setTranslations] = useState<Translation[]>([]);
+  const [tafseer, setTafseer] = useState<Tafseer[]>([]);
   const [selectedSurah, setSelectedSurah] = useState<Surah | null>(null);
   const [selectedAyah, setSelectedAyah] = useState<number | null>(null);
   const [loading, setLoading] = useState(false);
@@ -100,6 +133,36 @@ const AppProvider = ({ children }: { children: ReactNode }) => {
   const [sound, setSound] = useState<Audio.Sound | null>(null);
   const [isPlaying, setIsPlaying] = useState(false);
   const [currentAyah, setCurrentAyah] = useState<number | null>(null);
+  const [currentSurahIndex, setCurrentSurahIndex] = useState(0);
+  const [displaySettings, setDisplaySettings] = useState({
+    showArabic: true,
+    showTranslation: true,
+    showTafseer: false,
+  });
+
+  // Load saved display settings on startup
+  useEffect(() => {
+    (async () => {
+      try {
+        const savedSettings = await loadData('displaySettings');
+        if (savedSettings) {
+          setDisplaySettings(savedSettings);
+        }
+      } catch (error) {
+        console.error('Failed to load display settings:', error);
+      }
+    })();
+  }, []);
+
+  const updateDisplaySettings = async (settings: Partial<{
+    showArabic: boolean;
+    showTranslation: boolean;
+    showTafseer: boolean;
+  }>) => {
+    const newSettings = { ...displaySettings, ...settings };
+    setDisplaySettings(newSettings);
+    await saveData('displaySettings', newSettings);
+  };
 
   const showError = (message: string) => {
     Alert.alert('Error', message);
@@ -176,6 +239,34 @@ const AppProvider = ({ children }: { children: ReactNode }) => {
       }
     };
   }, [sound]);
+
+  const loadNextSurah = () => {
+    if (surahs.length === 0) return;
+    
+    const nextIndex = (currentSurahIndex + 1) % surahs.length; // Circular navigation
+    setCurrentSurahIndex(nextIndex);
+    const nextSurah = surahs[nextIndex];
+    setSelectedSurah(nextSurah);
+    fetchAyahs(nextSurah.number);
+    fetchTranslations(nextSurah.number);
+    if (displaySettings.showTafseer) {
+      fetchTafseer(nextSurah.number);
+    }
+  };
+
+  const loadPreviousSurah = () => {
+    if (surahs.length === 0) return;
+    
+    const prevIndex = (currentSurahIndex - 1 + surahs.length) % surahs.length; // Circular navigation
+    setCurrentSurahIndex(prevIndex);
+    const prevSurah = surahs[prevIndex];
+    setSelectedSurah(prevSurah);
+    fetchAyahs(prevSurah.number);
+    fetchTranslations(prevSurah.number);
+    if (displaySettings.showTafseer) {
+      fetchTafseer(prevSurah.number);
+    }
+  };
 
   const handleSearch = (query: string) => {
     setSearchQuery(query);
@@ -258,8 +349,6 @@ const AppProvider = ({ children }: { children: ReactNode }) => {
     }
   };
 
-
-
   const fetchTranslations = async (surahNumber: number) => {
     if (!surahNumber) return;
     
@@ -293,6 +382,53 @@ const AppProvider = ({ children }: { children: ReactNode }) => {
     }
   };
 
+  // Fetch Tafseer data
+  const fetchTafseer = async (surahNumber: number) => {
+    if (!surahNumber) return;
+    
+    // Only fetch tafseer if it's enabled in display settings
+    if (!displaySettings.showTafseer) return;
+    
+    setLoading(true);
+    setError(null);
+    try {
+      // We'll use Tafsir Ibn Kathir in Urdu, which corresponds to id 158 in the API
+      const tafseerID = 158; // Ibn Kathir Urdu
+      const cachedKey = `tafseer-${surahNumber}-${tafseerID}`;
+      
+      const cachedTafseer = await loadData(cachedKey);
+      if (cachedTafseer && cachedTafseer.length > 0) {
+        setTafseer(cachedTafseer);
+        setLoading(false);
+        return;
+      }
+
+      // Using Tafsir API to get Urdu tafseer
+      const response = await fetch(
+        `https://quranenc.com/api/v1/translation/sura/urdu_junagarhi/${surahNumber}`
+      );
+      
+      if (!response.ok) throw new Error('Failed to fetch tafseer');
+      
+      const data = await response.json();
+      if (!data.result) throw new Error('Invalid tafseer data');
+      
+      const tafseerData = data.result.map((ayah: any) => ({
+        number: ayah.aya,
+        text: ayah.translation
+      }));
+      
+      setTafseer(tafseerData);
+      await saveData(cachedKey, tafseerData);
+    } catch (error) {
+      showError(error instanceof Error ? error.message : 'Failed to load tafseer');
+      // Set empty tafseer to avoid continuous failed attempts
+      setTafseer([]);
+    } finally {
+      setLoading(false);
+    }
+  };
+
   const changeTranslation = (newLanguage: string) => {
     setTranslationLanguage(newLanguage);
     if (screen.startsWith('surah-')) {
@@ -307,6 +443,7 @@ const AppProvider = ({ children }: { children: ReactNode }) => {
     surahs,
     ayahs,
     translations,
+    tafseer,
     selectedSurah,
     setSelectedSurah,
     selectedAyah,
@@ -317,17 +454,23 @@ const AppProvider = ({ children }: { children: ReactNode }) => {
     setSearchQuery,
     filteredSurahs,
     translationLanguage,
+    displaySettings,
+    updateDisplaySettings,
     saveData,
     loadData,
     handleSearch,
     fetchSurahs,
     fetchAyahs,
     fetchTranslations,
+    fetchTafseer,
     changeTranslation,
     isPlaying,
     currentAyah,
     playAyah,
-    pauseAudio
+    pauseAudio,
+    loadNextSurah,
+    loadPreviousSurah,
+    currentSurahIndex
   };
 
   return (
@@ -368,16 +511,19 @@ const HomeScreen = () => {
           >
             <Text style={styles.buttonText}>📖 Read Quran</Text>
           </TouchableOpacity>
-          <TouchableOpacity style={styles.button} onPress={() => Alert.alert('Search feature coming soon')}>
-            <Text style={styles.buttonText}>🔍 Search</Text>
+          <TouchableOpacity 
+            style={styles.button} 
+            onPress={() => setScreen('settings')}
+          >
+            <Text style={styles.buttonText}>⚙ Settings</Text>
           </TouchableOpacity>
         </View>
         <View style={styles.buttonRow}>
           <TouchableOpacity style={styles.button} onPress={() => Alert.alert('Bookmark feature coming soon')}>
             <Text style={styles.buttonText}>🔖 Bookmark</Text>
           </TouchableOpacity>
-          <TouchableOpacity style={styles.button} onPress={() => Alert.alert('Settings feature coming soon')}>
-            <Text style={styles.buttonText}>⚙ Settings</Text>
+          <TouchableOpacity style={styles.button} onPress={() => Alert.alert('Search feature coming soon')}>
+            <Text style={styles.buttonText}>🔍 Search</Text>
           </TouchableOpacity>
         </View>
       </View>
@@ -464,25 +610,55 @@ const AyahScreen = () => {
     error,
     ayahs,
     translations,
+    tafseer,
     selectedSurah,
     selectedAyah,
     setSelectedAyah,
     translationLanguage,
+    displaySettings,
     fetchAyahs,
     fetchTranslations,
+    fetchTafseer,
     changeTranslation,
     isPlaying,
     currentAyah,
     playAyah,
-    pauseAudio
+    pauseAudio,
+    loadNextSurah,
+    loadPreviousSurah,
+    currentSurahIndex,
+    surahs
   } = useContext(AppContext);
 
   useEffect(() => {
     if (selectedSurah?.number) {
       fetchAyahs(selectedSurah.number);
       fetchTranslations(selectedSurah.number);
+      
+      if (displaySettings.showTafseer) {
+        fetchTafseer(selectedSurah.number);
+      }
     }
-  }, [selectedSurah?.number, translationLanguage]);
+  }, [selectedSurah?.number, translationLanguage, displaySettings.showTafseer]);
+
+  // Handle scroll events
+  const handleScroll = (event: NativeSyntheticEvent<NativeScrollEvent>) => {
+    const { contentOffset, layoutMeasurement, contentSize } = event.nativeEvent;
+    const paddingToBottom = 20;
+    
+    // Detect scroll to bottom
+    if (contentOffset.y + layoutMeasurement.height >= contentSize.height - paddingToBottom) {
+      loadNextSurah();
+    }
+  };
+
+  // Pull-to-refresh handler
+  const [refreshing, setRefreshing] = useState(false);
+  const onRefresh = () => {
+    setRefreshing(true);
+    loadPreviousSurah();
+    setRefreshing(false);
+  };
 
   const renderAyahItem = ({ item, index }: { item: Ayah, index: number }) => (
     <TouchableOpacity onPress={() => {
@@ -502,11 +678,21 @@ const AyahScreen = () => {
       ]}>
         <Text style={styles.ayahNumber}>{item.numberInSurah}.</Text>
         <View style={styles.ayahTextContainer}>
-          <Text style={styles.ayahArabic}>{item.text}</Text>
-          {translations[index] && (
+          {displaySettings.showArabic && (
+            <Text style={styles.ayahArabic}>{item.text}</Text>
+          )}
+          
+          {displaySettings.showTranslation && translations[index] && (
             <Text style={styles.ayahTranslation}>
               {translations[index].text}
             </Text>
+          )}
+          
+          {displaySettings.showTafseer && tafseer[index] && (
+            <View style={styles.tafseerContainer}>
+              <Text style={styles.tafseerHeader}>Tafseer:</Text>
+              <Text style={styles.tafseerText}>{tafseer[index].text}</Text>
+            </View>
           )}
         </View>
         <View style={styles.audioControls}>
@@ -534,21 +720,21 @@ const AyahScreen = () => {
           styles.translationButtonText,
           translationLanguage === 'en.sahih' && styles.selectedTranslationText
         ]}>
-          Sahih Intl
+          English (Sahih)
         </Text>
       </TouchableOpacity>
       <TouchableOpacity 
         style={[
           styles.translationButton,
-          translationLanguage === 'en.ahmedali' && styles.selectedTranslation
+          translationLanguage === 'ur.jalandhry' && styles.selectedTranslation
         ]}
-        onPress={() => changeTranslation('en.ahmedali')}
+        onPress={() => changeTranslation('ur.jalandhry')}
       >
         <Text style={[
           styles.translationButtonText,
-          translationLanguage === 'en.ahmedali' && styles.selectedTranslationText
+          translationLanguage === 'ur.jalandhry' && styles.selectedTranslationText
         ]}>
-          Ahmed Ali
+          Urdu (Jalandhry)
         </Text>
       </TouchableOpacity>
       <TouchableOpacity 
@@ -562,7 +748,7 @@ const AyahScreen = () => {
           styles.translationButtonText,
           translationLanguage === 'en.pickthall' && styles.selectedTranslationText
         ]}>
-          Pickthall
+          English (Pickthall)
         </Text>
       </TouchableOpacity>
     </View>
@@ -585,6 +771,13 @@ const AyahScreen = () => {
       
       {renderTranslationOptions()}
       
+      <TouchableOpacity
+        style={styles.settingsButton}
+        onPress={() => setScreen('settings')}
+      >
+        <Text style={styles.settingsButtonText}>Display Settings</Text>
+      </TouchableOpacity>
+      
       {error && (
         <View style={styles.errorContainer}>
           <Text style={styles.errorText}>{error}</Text>
@@ -594,6 +787,9 @@ const AyahScreen = () => {
               if (selectedSurah?.number) {
                 fetchAyahs(selectedSurah.number);
                 fetchTranslations(selectedSurah.number);
+                if (displaySettings.showTafseer) {
+                  fetchTafseer(selectedSurah.number);
+                }
               }
             }}
           >
@@ -613,8 +809,184 @@ const AyahScreen = () => {
           ListEmptyComponent={
             <Text style={styles.noResultsText}>No ayahs found</Text>
           }
+          onScroll={handleScroll}
+          scrollEventThrottle={16}
+          refreshControl={
+            <RefreshControl
+              refreshing={refreshing}
+              onRefresh={onRefresh}
+              colors={['#344D92']}
+              tintColor="#344D92"
+            />
+          }
         />
       )}
+      
+      <View style={styles.navigationButtons}>
+        <TouchableOpacity 
+          style={styles.navButton} 
+          onPress={loadPreviousSurah}
+        >
+          <Text style={styles.navButtonText}>Previous Surah</Text>
+        </TouchableOpacity>
+        <Text style={styles.navInfo}>
+          {currentSurahIndex + 1}/{surahs.length}
+        </Text>
+        <TouchableOpacity 
+          style={styles.navButton} 
+          onPress={loadNextSurah}
+        >
+          <Text style={styles.navButtonText}>Next Surah</Text>
+        </TouchableOpacity>
+      </View>
+    </View>
+  );
+};
+
+// Settings Screen Component
+const SettingsScreen = () => {
+  const {
+    setScreen,
+    displaySettings,
+    updateDisplaySettings,
+    translationLanguage,
+    changeTranslation,
+  } = useContext(AppContext);
+
+  const previousScreen = useContext(AppContext).screen;
+  
+  return (
+    <View style={styles.settingsContainer}>
+      <TouchableOpacity 
+        style={styles.backButton} 
+        onPress={() => setScreen(previousScreen === 'settings' ? 'home' : previousScreen)}
+      >
+        <Text style={styles.backButtonText}>⬅ Back</Text>
+      </TouchableOpacity>
+      
+      <Text style={styles.screenTitle}>Settings</Text>
+      
+      <View style={styles.settingSection}>
+        <Text style={styles.sectionTitle}>Display Options</Text>
+        
+        <View style={styles.settingRow}>
+          <Text style={styles.settingLabel}>Show Arabic Text</Text>
+          <Switch
+            value={displaySettings.showArabic}
+            onValueChange={(value) => updateDisplaySettings({ showArabic: value })}
+            trackColor={{ false: '#767577', true: '#344D92' }}
+            thumbColor={displaySettings.showArabic ? '#f5f5dc' : '#f4f3f4'}
+          />
+        </View>
+        
+        <View style={styles.settingRow}>
+          <Text style={styles.settingLabel}>Show Translation</Text>
+          <Switch
+            value={displaySettings.showTranslation}
+            onValueChange={(value) => updateDisplaySettings({ showTranslation: value })}
+            trackColor={{ false: '#767577', true: '#344D92' }}
+            thumbColor={displaySettings.showTranslation ? '#f5f5dc' : '#f4f3f4'}
+          />
+        </View>
+        
+        <View style={styles.settingRow}>
+          <Text style={styles.settingLabel}>Show Tafseer (Urdu)</Text>
+          <Switch
+            value={displaySettings.showTafseer}
+            onValueChange={(value) => updateDisplaySettings({ showTafseer: value })}
+            trackColor={{ false: '#767577', true: '#344D92' }}
+            thumbColor={displaySettings.showTafseer ? '#f5f5dc' : '#f4f3f4'}
+          />
+        </View>
+      </View>
+      
+      <View style={styles.settingSection}>
+        <Text style={styles.sectionTitle}>Translation Language</Text>
+        
+        <TouchableOpacity
+          style={[
+            styles.languageOption,
+            translationLanguage === 'en.sahih' && styles.selectedLanguage
+          ]}
+          onPress={() => changeTranslation('en.sahih')}
+        >
+          <Text style={[
+            styles.languageText,
+            translationLanguage === 'en.sahih' && styles.selectedLanguageText
+          ]}>
+            English (Sahih International)
+          </Text>
+        </TouchableOpacity>
+        
+        <TouchableOpacity
+          style={[
+            styles.languageOption,
+            translationLanguage === 'ur.jalandhry' && styles.selectedLanguage
+          ]}
+          onPress={() => changeTranslation('ur.jalandhry')}
+        >
+          <Text style={[
+            styles.languageText,
+            translationLanguage === 'ur.jalandhry' && styles.selectedLanguageText
+          ]}>
+            Urdu (Jalandhry)
+          </Text>
+        </TouchableOpacity>
+        
+        <TouchableOpacity
+          style={[
+            styles.languageOption,
+            translationLanguage === 'en.pickthall' && styles.selectedLanguage
+          ]}
+          onPress={() => changeTranslation('en.pickthall')}
+        >
+          <Text style={[
+            styles.languageText,
+            translationLanguage === 'en.pickthall' && styles.selectedLanguageText
+          ]}>
+            English (Pickthall)
+          </Text>
+        </TouchableOpacity>
+        
+        <TouchableOpacity
+          style={[
+            styles.languageOption,
+            translationLanguage === 'en.yusufali' && styles.selectedLanguage
+          ]}
+          onPress={() => changeTranslation('en.yusufali')}
+        >
+          <Text style={[
+            styles.languageText,
+            translationLanguage === 'en.yusufali' && styles.selectedLanguageText
+          ]}>
+            English (Yusuf Ali)
+          </Text>
+        </TouchableOpacity>
+        
+        <TouchableOpacity
+          style={[
+            styles.languageOption,
+            translationLanguage === 'ur.ahmedali' && styles.selectedLanguage
+          ]}
+          onPress={() => changeTranslation('ur.ahmedali')}
+        >
+          <Text style={[
+            styles.languageText,
+            translationLanguage === 'ur.ahmedali' && styles.selectedLanguageText
+          ]}>
+            Urdu (Ahmed Ali)
+          </Text>
+        </TouchableOpacity>
+      </View>
+      
+      <View style={styles.settingSection}>
+        <Text style={styles.sectionTitle}>About</Text>
+        <Text style={styles.aboutText}>
+          This Quran app allows you to read the Quran in Arabic with translations in English and Urdu.
+          It also provides Tafseer in Urdu to help understand the meaning of the verses.
+        </Text>
+        <Text style={styles.versionText}>Version 2.0.0</Text>
+      </View>
     </View>
   );
 };
@@ -627,6 +999,7 @@ const AppContent = () => {
     <View style={styles.appContainer}>
       {screen === 'home' && <HomeScreen />}
       {screen === 'surahs' && <SurahListScreen />}
+      {screen === 'settings' && <SettingsScreen />}
       {screen?.startsWith('surah-') && <AyahScreen />}
     </View>
   );
@@ -786,7 +1159,7 @@ const styles = StyleSheet.create({
     borderRadius: 10,
     elevation: 2,
     flexDirection: 'row',
-    alignItems: 'center'
+    alignItems: 'flex-start'
   },
   highlightedAyah: {
     backgroundColor: '#f0f0f0'
@@ -818,7 +1191,27 @@ const styles = StyleSheet.create({
     fontSize: 16,
     lineHeight: 22,
     color: '#555',
-    textAlign: 'left'
+    textAlign: 'left',
+    marginBottom: 10
+  },
+  tafseerContainer: {
+    marginTop: 5,
+    padding: 10,
+    backgroundColor: '#f9f9eb',
+    borderRadius: 8,
+    borderLeftWidth: 3,
+    borderLeftColor: '#8B7A62'
+  },
+  tafseerHeader: {
+    fontSize: 14,
+    fontWeight: 'bold',
+    color: '#8B7A62',
+    marginBottom: 5
+  },
+  tafseerText: {
+    fontSize: 14,
+    lineHeight: 20,
+    color: '#5D4E36'
   },
   audioControls: {
     marginLeft: 10
@@ -833,7 +1226,7 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     flexWrap: 'wrap',
     justifyContent: 'center',
-    marginBottom: 15,
+    marginVertical: 10,
     alignItems: 'center'
   },
   translationTitle: {
@@ -881,5 +1274,97 @@ const styles = StyleSheet.create({
     textAlign: 'center',
     marginTop: 20,
     color: '#666'
-  }
+  },
+  // Settings Screen Styles
+  settingsContainer: {
+    flex: 1,
+    padding: 15
+  },
+  settingSection: {
+    backgroundColor: 'white',
+    borderRadius: 10,
+    padding: 15,
+    marginVertical: 10
+  },
+  sectionTitle: {
+    fontSize: 18,
+    fontWeight: 'bold',
+    color: '#344D92',
+    marginBottom: 15
+  },
+  settingRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingVertical: 10,
+    borderBottomWidth: 1,
+    borderBottomColor: '#f0f0f0'
+  },
+  settingLabel: {
+    fontSize: 16,
+    color: '#333'
+  },
+  languageOption: {
+    padding: 12,
+    borderRadius: 8,
+    marginVertical: 5,
+    backgroundColor: '#f0f0f0'
+  },
+  selectedLanguage: {
+    backgroundColor: '#344D92'
+  },
+  languageText: {
+    fontSize: 16,
+    color: '#333'
+  },
+  selectedLanguageText: {
+    color: 'white',
+    fontWeight: 'bold'
+  },
+  aboutText: {
+    fontSize: 14,
+    lineHeight: 20,
+    color: '#666',
+    marginBottom: 10
+  },
+  versionText: {
+    fontSize: 12,
+    color: '#888',
+    textAlign: 'center',
+    marginTop: 10
+  },
+  settingsButton: {
+    backgroundColor: '#8B7A62',
+    paddingVertical: 8,
+    paddingHorizontal: 15,
+    borderRadius: 20,
+    alignSelf: 'center',
+    marginVertical: 10
+  },
+  settingsButtonText: {
+    color: 'white',
+    fontSize: 14,
+    fontWeight: 'bold'
+  },
+  // Navigation buttons
+  navigationButtons: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    padding: 10,
+    backgroundColor: '#f0f0f0',
+    borderTopWidth: 1,
+    borderTopColor: '#ddd',
+  },
+  navButton: {
+    padding: 10,
+    backgroundColor: '#344D92',
+    borderRadius: 5,
+  },
+  navButtonText: {
+    color: 'white',
+    fontWeight: 'bold',
+  },
+  navInfo: {color: '#344D92',fontWeight: 'bold',
+  },
 });
