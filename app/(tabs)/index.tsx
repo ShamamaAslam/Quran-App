@@ -4,6 +4,8 @@ import { View, Text, Image, TouchableOpacity, FlatList, ActivityIndicator, Style
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Audio } from 'expo-av';
 import { Ionicons } from '@expo/vector-icons';
+import { supabase } from './supabase'; 
+
 
 // Define types for our data structures
 type Surah = {
@@ -193,23 +195,19 @@ const AppProvider = ({ children }: { children: ReactNode }) => {
       if (sound) {
         await sound.unloadAsync();
       }
-
       // Play the new audio
       const { sound: newSound } = await Audio.Sound.createAsync(
         { uri: audioUrl },
         { shouldPlay: true }
       );
-      
       setSound(newSound);
       setIsPlaying(true);
       setCurrentAyah(ayahNumber);
-
       // When playback finishes
       newSound.setOnPlaybackStatusUpdate((status) => {
         if (status.didJustFinish) {
           setIsPlaying(false);
           setCurrentAyah(null);
-          
           // Auto-play next ayah
           const nextAyahIndex = ayahs.findIndex(a => a.numberInSurah === ayahNumber) + 1;
           if (nextAyahIndex < ayahs.length) {
@@ -223,14 +221,12 @@ const AppProvider = ({ children }: { children: ReactNode }) => {
       showError('Failed to play audio');
     }
   };
-
   const pauseAudio = async () => {
     if (sound) {
       await sound.pauseAsync();
       setIsPlaying(false);
     }
   };
-
   // Clean up audio when component unmounts
   useEffect(() => {
     return () => {
@@ -283,6 +279,17 @@ const AppProvider = ({ children }: { children: ReactNode }) => {
   };
 
   const fetchSurahs = async () => {
+
+const surahdatafetch = async ()=>{
+  let { data: Surahs, error } = await supabase.from('Surahs').select('*')
+if(error){
+  console.log(error)
+}
+console.log('Supabase Database Data == ',Surahs)
+}
+surahdatafetch();
+
+
     setLoading(true);
     setError(null);
     try {
@@ -325,7 +332,6 @@ const AppProvider = ({ children }: { children: ReactNode }) => {
         setLoading(false);
         return;
       }
-  
       const response = await fetch(`https://api.alquran.cloud/v1/surah/${surahNumber}/ar.alafasy`);
       if (!response.ok) throw new Error('Failed to fetch ayahs');
       
@@ -381,7 +387,6 @@ const AppProvider = ({ children }: { children: ReactNode }) => {
       setLoading(false);
     }
   };
-
   // Fetch Tafseer data
   const fetchTafseer = async (surahNumber: number) => {
     if (!surahNumber) return;
@@ -601,7 +606,6 @@ const SurahListScreen = () => {
     </View>
   );
 };
-
 // Ayah Screen Component
 const AyahScreen = () => {
   const {
